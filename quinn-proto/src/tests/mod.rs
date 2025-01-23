@@ -201,6 +201,48 @@ fn stateless_retry() {
 }
 
 #[test]
+fn stateless_retry_token_expired() {
+    struct InfiniteTimeSource;
+    impl TimeSource for InfiniteTimeSource {
+        fn now(&self) -> SystemTime {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(u32::MAX as u64)
+        }
+    }
+
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.incoming_connection_behavior = IncomingConnectionBehavior::Validate;
+
+    let config = server_config();
+    let token_key = config.token_key.clone();
+    pair.server.set_server_config(Some(Arc::new(config)));
+
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    pair.drive_client();
+
+    let mut config = server_config();
+    // to avoid token decode failure
+    config
+        .time_source(Arc::new(InfiniteTimeSource))
+        .token_key(token_key);
+    pair.server.set_server_config(Some(Arc::new(config)));
+
+    pair.drive();
+    assert_matches!(
+        pair.client_conn_mut(client_ch).poll(),
+        Some(Event::ConnectionLost { reason: ConnectionError::ConnectionClosed(err) })
+        if err.error_code == TransportErrorCode::INVALID_TOKEN
+    );
+
+    assert_eq!(pair.client.known_connections(), 0);
+    assert_eq!(pair.client.known_cids(), 0);
+    assert_eq!(pair.server.known_connections(), 0);
+    assert_eq!(pair.server.known_cids(), 0);
+}
+
+#[test]
 fn server_stateless_reset() {
     let _guard = subscribe();
     let mut key_material = vec![0; 64];
