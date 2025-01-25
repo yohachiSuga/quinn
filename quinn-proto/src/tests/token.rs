@@ -21,6 +21,41 @@ fn stateless_retry() {
 }
 
 #[test]
+fn stateless_retry_token_expired() {
+    let _guard = subscribe();
+
+    let fake_time = Arc::new(FakeTimeSource::new());
+    let lifetime = Duration::from_secs(10000);
+
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(validate_incoming);
+
+    let mut config = server_config();
+    config.time_source(Arc::clone(&fake_time) as _);
+    pair.server.set_server_config(Some(Arc::new(config)));
+
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    pair.drive_client();
+
+    // to expire retry token
+    fake_time.advance(lifetime + Duration::from_secs(100));
+
+    pair.drive();
+    assert_matches!(
+        pair.client_conn_mut(client_ch).poll(),
+        Some(Event::ConnectionLost { reason: ConnectionError::ConnectionClosed(err) })
+        if err.error_code == TransportErrorCode::INVALID_TOKEN
+    );
+
+    assert_eq!(pair.client.known_connections(), 0);
+    assert_eq!(pair.client.known_cids(), 0);
+    assert_eq!(pair.server.known_connections(), 0);
+    assert_eq!(pair.server.known_cids(), 0);
+}
+
+#[test]
 fn use_token() {
     let _guard = subscribe();
     let mut pair = Pair::default();
